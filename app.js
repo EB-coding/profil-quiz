@@ -50,6 +50,21 @@ const LS = {
 let evals = LS.get(STORE_KEY, {});
 function persist(){ LS.set(STORE_KEY, evals); }
 
+// ---------- Faits vécus (contexte chiffré, facultatif) ----------
+const FACTS_PW_KEY = "pq_facts_pw";
+let FACTS = null;
+async function unlockFacts(pw){
+  if (typeof FAITS_ENC === "undefined" || !window.crypto || !crypto.subtle) return false;
+  try {
+    const d = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+    const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(pw), "PBKDF2", false, ["deriveKey"]);
+    const key = await crypto.subtle.deriveKey({name:"PBKDF2", salt:d(FAITS_ENC.salt), iterations:FAITS_ENC.iter, hash:"SHA-256"}, base, {name:"AES-GCM", length:256}, false, ["decrypt"]);
+    const pt = await crypto.subtle.decrypt({name:"AES-GCM", iv:d(FAITS_ENC.iv)}, key, d(FAITS_ENC.data));
+    FACTS = JSON.parse(new TextDecoder().decode(pt)); return true;
+  } catch(e){ return false; }
+}
+const factsFor = who => FACTS && who && norm(FACTS.target) === norm(who.t) ? FACTS.facts : null;
+
 function b64e(s){ const b = new TextEncoder().encode(s); let bin = ""; b.forEach(x => bin += String.fromCharCode(x));
   return btoa(bin).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,""); }
 function b64d(s){ s = s.replace(/-/g,"+").replace(/_/g,"/"); while (s.length % 4) s += "=";
@@ -316,7 +331,13 @@ function promptIA({kind, who, ctx, V, raters, range, self, rater}){
   if (R.at) L.push(`- État du moi dominant (AT) : ${R.at}`);
   if (R.emp) L.push(`- Empathie : ${R.emp}`);
   if (R.freud) L.push(`- Freud : ${R.freud}`);
+  const fs = kind !== "self" ? factsFor(who) : null;
+  if (fs) {
+    L.push("\n## Faits vécus rapportés par le groupe (contexte)");
+    fs.forEach((f, i) => L.push(`${i+1}. ${f.t} (rapporté par ${f.by}) : ${f.d} Lecture favorable : ${f.l}. Lecture défavorable : ${f.r}.`));
+  }
   L.push("\nCe que j'attends de toi :");
+  if (fs) L.push("0. Pour chaque fait, dis quelle lecture (favorable ou défavorable) te paraît la plus probable au vu du profil, et pourquoi.");
   if (kind === "self") {
     L.push("1. Une lecture croisée honnête de mon fonctionnement (cohérences et contradictions entre grilles), sans complaisance.");
     L.push("2. Ce qui motive probablement mes comportements problématiques (peur, maladresse, intérêt, besoin de paraître…), avec ton degré de confiance.");
@@ -491,6 +512,8 @@ function axisBody(k, V, opt){
     if (E.self) h += `<p><b>Pistes pour toi :</b></p><ul>${E.self.map(x => `<li>${x}</li>`).join("")}</ul>`;
   }
   if (!self && conc && E.face) h += `<p><b>Face à ça :</b> ${md(tx(E.face, who))}</p>`;
+  const fs = factsFor(who), linked = fs ? fs.filter(f => f.ax[k]) : [];
+  if (linked.length) h += `<p><b>Vécu concret :</b> ${linked.map(f => esc(f.t)).join(" · ")}</p>`;
   const rg = opt.range && opt.range[k], sf = opt.self && opt.self[k];
   if (rg) h += `<p class="mute">Entre évaluateurs : de ${Math.round(rg[0])} à ${Math.round(rg[1])}.</p>`;
   if (sf != null) h += `<p class="mute">Auto-évaluation : ${Math.round(sf)} (écart ${Math.round(sf - v) > 0 ? "+" : ""}${Math.round(sf - v)} avec votre moyenne).</p>`;
@@ -602,7 +625,40 @@ function selfPlan(V){
     <li>Refais ce test dans <b>un à deux mois</b> et compare.</li>
     <li>Le plus instructif : demande à <b>2 ou 3 proches</b> de t'évaluer avec « Évaluer quelqu'un », puis compare dans la Synthèse. L'écart entre ton image et la leur, ce sont tes angles morts.</li></ol></section>`;
 }
-const LIMIT_NOTE = `<p class="mute small foot">Ce profil reflète une perception, pas un diagnostic. Il prend toute sa valeur quand on croise plusieurs évaluations indépendantes et l'auto-évaluation (Synthèse de groupe), puis qu'on le confronte aux faits.</p>`;
+// Un fait est-il le signe d'un fonctionnement de fond ? = à quel point les traits qui lui sont liés sont marqués
+function factStrength(f, V){
+  let n = 0, d = 0;
+  for (const [k, w] of Object.entries(f.ax)) { const c = concernOf(k, V[k]); if (c == null) continue; n += w * c; d += w; }
+  return d ? n / d : null;
+}
+function patternInfo(s){
+  if (s == null) return {b:`<span class="badge mid">—</span>`, t:"Pas assez de réponses sur les traits liés."};
+  return s >= 72 ? {b:`<span class="badge bad">Fond très probable</span>`, t:"Les traits liés à ce fait sont parmi les plus marqués du profil : c'est très probablement un fonctionnement qui se répète, pas un accident."}
+    : s >= 62 ? {b:`<span class="badge bad">Fond probable</span>`, t:"Les traits liés à ce fait sont nettement marqués : ce n'est probablement pas un accident isolé, mais un fonctionnement qui se répète."}
+    : s >= 52 ? {b:`<span class="badge warn">En partie</span>`, t:"Les traits liés sont assez marqués : le fait s'inscrit en partie dans un fonctionnement de fond."}
+    : {b:`<span class="badge mid">Plutôt isolé</span>`, t:"Les traits liés sont peu marqués : au vu du questionnaire, ce fait ressemble plutôt à un épisode isolé."};
+}
+function factsCard(V, who){
+  if (typeof FAITS_ENC === "undefined") return "";
+  if (!FACTS) return `<section class="card"><h2>Contexte : les faits vécus</h2>
+    <p class="small mute">Partie protégée par mot de passe : les faits rapportés par le groupe, croisés avec le questionnaire.</p>
+    <form id="funlock" class="unlock"><input type="password" id="fpw" placeholder="Mot de passe" autocomplete="off"><button class="btn pri" type="submit">Déverrouiller</button></form>
+    <label class="small remember"><input type="checkbox" id="fremember" checked> Se souvenir sur cet appareil</label><p id="fmsg" class="small"></p></section>`;
+  const fs = factsFor(who); if (!fs) return "";
+  const R = readings(V, who);
+  const list = fs.map(f => ({f, s:factStrength(f, V)})).sort((a,b) => (b.s ?? 0) - (a.s ?? 0));
+  return `<section class="card facts"><h2>Contexte : les faits vécus</h2>
+    <p class="small mute">Les faits rapportés par le groupe, croisés avec le questionnaire, du plus révélateur d'un fonctionnement de fond au plus isolé.${R.intent != null ? ` Intention globale selon le questionnaire : <b>${Math.round(R.intent)}/100</b> (${md(R.zoneTxt.split(" : ")[0])}) : gardez les deux lectures de chaque fait en tête.` : ""}</p>
+    ${list.map(({f, s}, i) => { const P = patternInfo(s); return `<details class="concern" ${i < 3 ? "open" : ""}><summary><span class="an">${esc(f.t)}</span><span class="val">${P.b}</span></summary>
+      <div class="axd"><p class="mute">Rapporté par : ${esc(f.by)}</p><p>${esc(f.d)}</p>
+      <p><b>Lecture favorable :</b> ${esc(f.l)}<br><b>Lecture défavorable :</b> ${esc(f.r)}</p>
+      <p><b>Ce que dit le questionnaire :</b> ${P.t}</p>
+      <p class="axlinks">${Object.keys(f.ax).filter(k => V[k] != null).map(k => `<span>${AXES[k].n} ${badge(k, V[k])}</span>`).join("")}</p>
+      ${f.q ? `<p><b>Pour l'aborder (question ouverte) :</b> ${esc(f.q)}</p>` : ""}
+      ${f.e ? `<p><b>Esquive probable :</b> ${esc(f.e)} → ${esc(f.rep)}</p>` : ""}</div></details>`; }).join("")}
+    <p class="small"><button class="link" data-act="lockfacts">Verrouiller sur cet appareil</button></p></section>`;
+}
+const LIMIT_NOTE =`<p class="mute small foot">Ce profil reflète une perception, pas un diagnostic. Il prend toute sa valeur quand on croise plusieurs évaluations indépendantes et l'auto-évaluation (Synthèse de groupe), puis qu'on le confronte aux faits.</p>`;
 
 function vResults(){
   const ev = curEval(); if (!ev) return vHome();
@@ -626,7 +682,7 @@ function vResults(){
   ${summaryCard(V, who, "En bref")}
   ${self
     ? concernCards(V, mode, who, "Tes points de vigilance", "Du plus marqué au moins marqué. Pour chacun : ce que c'est, un exemple, pourquoi on fait ça, ce que ça coûte, et des pistes concrètes.") + strengthsCard(V, true) + selfPlan(V)
-    : recsCard(V, ev.c, who) + concernCards(V, mode, who, "Comprendre ses comportements", "Les axes préoccupants, du plus au moins marqué : ce que c'est, un exemple typique, pourquoi ça arrive, et comment y faire face.") + strengthsCard(V, false)}
+    : recsCard(V, ev.c, who) + factsCard(V, who) + concernCards(V, mode, who, "Comprendre ses comportements", "Les axes préoccupants, du plus au moins marqué : ce que c'est, un exemple typique, pourquoi ça arrive, et comment y faire face.") + strengthsCard(V, false)}
   <h2>Détail par grille</h2>${LEGEND}
   ${gridCards(V, {who, conf:C, mode})}
   ${LIMIT_NOTE}`;
@@ -679,7 +735,7 @@ function vSynth(){
       body += `<div class="card"><p class="small">${raters.length} évaluateur${raters.length>1?"s":""}${agree ? ` · accord entre vous : <b>${agree}</b> (écart moyen ${Math.round(ms)} pts)` : ""}${selfV ? " · auto-évaluation incluse" : ""}</p>
         <p class="small mute">Sur chaque barre : remplissage = votre moyenne · zone encadrée = du plus bas au plus haut entre évaluateurs${selfV ? " · trait noir = son auto-évaluation" : ""}.</p>
         <div class="btns"><button class="btn" data-act="copy" data-what="prompt">Copier le prompt pour une IA</button></div></div>
-        ${intentCard(M, who, selfV)}${gaps}${summaryCard(M, who, "En bref (moyenne du groupe)")}${recsCard(M, ctx, who)}
+        ${intentCard(M, who, selfV)}${gaps}${summaryCard(M, who, "En bref (moyenne du groupe)")}${recsCard(M, ctx, who)}${factsCard(M, who)}
         ${concernCards(M, "other", who, "Comprendre ses comportements", "Les axes préoccupants selon votre moyenne : ce que c'est, un exemple typique, pourquoi ça arrive, et comment y faire face.")}${strengthsCard(M, false)}
         <h2>Détail par grille</h2>${LEGEND}${gridCards(M, {who, range, self:selfV, mode:"other"})}${LIMIT_NOTE}`;
     }
@@ -733,9 +789,19 @@ document.addEventListener("click", e => {
     LS.set(SYNTH_KEY, (cur ? cur + "\n" : "") + mine); render(); }
   else if (act === "synclear") { LS.set(SYNTH_KEY, ""); render(); }
   else if (act === "target") { view.target = b.dataset.t; render(); }
+  else if (act === "lockfacts") { FACTS = null; try { localStorage.removeItem(FACTS_PW_KEY); } catch(e){} render(); }
 });
 
 document.addEventListener("submit", e => {
+  if (e.target.id === "funlock") {
+    e.preventDefault(); const pw = $("#fpw").value; $("#fmsg").textContent = "Vérification…";
+    unlockFacts(pw).then(ok => {
+      if (!ok) { $("#fmsg").textContent = "Mot de passe incorrect."; return; }
+      if ($("#fremember")?.checked) LS.set(FACTS_PW_KEY, pw);
+      const y = window.scrollY; render(); window.scrollTo(0, y);
+    });
+    return;
+  }
   if (e.target.id !== "setup") return; e.preventDefault();
   const fd = new FormData(e.target); const m = view.m;
   const r = (fd.get("r") || "").trim();
@@ -747,3 +813,4 @@ document.addEventListener("submit", e => {
 // Migration : compléter les anciennes évaluations si des questions ont été ajoutées
 Object.values(evals).forEach(ev => ev.a = padAnswers(ev.a));
 render();
+{ const pw = LS.get(FACTS_PW_KEY, null); if (pw) unlockFacts(pw).then(ok => { if (ok) render(); }); }
