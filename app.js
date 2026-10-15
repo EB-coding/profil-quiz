@@ -634,9 +634,9 @@ function factStrength(f, V){
 function patternInfo(s){
   if (s == null) return {b:`<span class="badge mid">—</span>`, t:"Pas assez de réponses sur les traits liés."};
   return s >= 72 ? {b:`<span class="badge bad">Fond très probable</span>`, t:"Les traits liés à ce fait sont parmi les plus marqués du profil : c'est très probablement un fonctionnement qui se répète, pas un accident."}
-    : s >= 62 ? {b:`<span class="badge bad">Fond probable</span>`, t:"Les traits liés à ce fait sont nettement marqués : ce n'est probablement pas un accident isolé, mais un fonctionnement qui se répète."}
-    : s >= 52 ? {b:`<span class="badge warn">En partie</span>`, t:"Les traits liés sont assez marqués : le fait s'inscrit en partie dans un fonctionnement de fond."}
-    : {b:`<span class="badge mid">Plutôt isolé</span>`, t:"Les traits liés sont peu marqués : au vu du questionnaire, ce fait ressemble plutôt à un épisode isolé."};
+    : s >= 62 ? {b:`<span class="badge warn">Fond probable</span>`, t:"Les traits liés à ce fait sont nettement marqués : ce n'est probablement pas un accident isolé, mais un fonctionnement qui se répète."}
+    : s >= 52 ? {b:`<span class="badge mid">En partie</span>`, t:"Les traits liés sont assez marqués : le fait s'inscrit en partie dans un fonctionnement de fond."}
+    : {b:`<span class="badge ok">Plutôt isolé</span>`, t:"Les traits liés sont peu marqués : au vu du questionnaire, ce fait ressemble plutôt à un épisode isolé."};
 }
 function factsCard(V, who){
   if (typeof FAITS_ENC === "undefined") return "";
